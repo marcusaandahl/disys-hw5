@@ -1,0 +1,54 @@
+2023/11/26 19:43:41 (PRIMARY-SERVER) Auction House started on port 3000
+
+2023/11/26 19:43:46 (BACKUP-SERVER) Auction House started on port 3001
+
+(NEW CLIENT JOINS)
+
+2023/11/26 19:44:02 (CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) Starting a new connection
+2023/11/26 19:44:02 (CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) The connection is: READY
+2023/11/26 19:44:02 (CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) Write 'bid' to bid and/or start an auction; or write 'result' to see the result of the latest auction.
+
+(NEW CLIENT JOINS)
+
+2023/11/26 19:44:12 (CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) Starting a new connection
+2023/11/26 19:44:12 (CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) The connection is: READY
+2023/11/26 19:44:12 (CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) Write 'bid' to bid and/or start an auction; or write 'result' to see the result of the latest auction.
+
+(INPUT CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) bid 100
+2023/11/26 19:44:25 You are the current highest bidder with 100
+
+(INPUT CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) bid 100
+2023/11/26 19:44:44 Higher bid exists (100)
+
+(INPUT CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) bid 200
+2023/11/26 19:45:34 You are the current highest bidder with 200
+
+(INPUT CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) result
+2023/11/26 19:45:38 The highest bid is 200 by user 84672af0-ed43-4b67-b2ee-d5ca87c04c23
+    Time remaining: 27 seconds
+
+(PRIMARY SERVER CRASHES)
+
+(INPUT CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) result
+2023/11/26 19:45:59 (CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) Server returned with exception - Attempting to switch server for result
+2023/11/26 19:45:59 (CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) Starting a new connection
+2023/11/26 19:45:59 (CLIENT-b45db783-ce4b-4c02-871e-cf6bafef5591) The connection is: READY
+2023/11/26 19:45:59 The highest bid is 200 by user 84672af0-ed43-4b67-b2ee-d5ca87c04c23
+    Time remaining: 6 seconds
+
+(INPUT CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) result
+2023/11/26 19:46:50 (CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) Server returned with exception - Attempting to switch server for result
+2023/11/26 19:46:50 (CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) Starting a new connection
+2023/11/26 19:46:50 (CLIENT-84672af0-ed43-4b67-b2ee-d5ca87c04c23) The connection is: READY
+2023/11/26 19:46:50 The auction is over!
+    Last auction was won with a bid of 200 by user with ID 84672af0-ed43-4b67-b2ee-d5ca87c04c23
+
+(NEW CLIENT JOINS)
+
+2023/11/26 19:49:49 (CLIENT-13c23d85-4809-4afd-9951-a55286268304) Starting a new connection
+2023/11/26 19:49:52 (CLIENT-13c23d85-4809-4afd-9951-a55286268304) The connection is: READY
+2023/11/26 19:49:52 (CLIENT-13c23d85-4809-4afd-9951-a55286268304) Write 'bid' to bid and/or start an auction; or write 'result' to see the result of the latest auction.
+
+(INPUT CLIENT-13c23d85-4809-4afd-9951-a55286268304) result
+2023/11/26 19:49:55 The auction is over!
+    Last auction was won with a bid of 200 by user with ID 84672af0-ed43-4b67-b2ee-d5ca87c04c23

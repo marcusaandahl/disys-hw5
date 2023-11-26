@@ -4,158 +4,203 @@ import (
 	"context"
 	"fmt"
 	"google.golang.org/grpc"
-	"io"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	gRPC "github.com/marcusaandahl/disys-hw5/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-type SavedMessage struct {
-	clientName string
-	message    string
-	join       bool
-	leave      bool
-	timestamp  int32
+var backupServer gRPC.AuctionHouseClient
+var _ *grpc.ClientConn //the server connection
+var isConnectedToBackup = false
+var logMessagePrefix = "PRIMARY-SERVER"
+
+type AuctionHouseServer struct {
+	gRPC.UnimplementedAuctionHouseServer
+	mutex       sync.Mutex // used to lock the server to avoid race conditions.
+	serverState gRPC.ServerState
 }
 
-type Client struct {
-	clientName string
-}
-
-type Server struct {
-	gRPC.UnimplementedChatServer
-	mutex    sync.Mutex // used to lock the server to avoid race conditions.
-	messages []SavedMessage
-	clients  []Client
-}
-
-var localTime int32 = 0
+var port = 3000
 
 func main() {
 	launchServer()
 }
 
 func launchServer() {
-	log.Println("Server Chitty-Chat Attempts to create listener on port 5400")
+	isBackup := false
 
-	// Create listener tcp on given port or default port 5400
-	list, err := net.Listen("tcp", "localhost:5400")
+	// Starts server on 3000 if primary - on 3001 as backup server if 3000 is occupied
+	list, err := net.Listen("tcp", fmt.Sprintf("localhost:%v", port))
 	if err != nil {
-		log.Printf("Server Chitty-Chat Failed to listen on port 5400: %v", err) //If it fails to listen on the port, run launchServer method again with the next value/port in ports array
-		return
+		port = 3001
+		list, err = net.Listen("tcp", fmt.Sprintf("localhost:%v", port))
+		isBackup = true
+		logMessagePrefix = "BACKUP-SERVER"
+		check(err)
 	}
 
-	// makes gRPC server using the options
-	// you can add options here if you want or remove the options part entirely
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 
-	// makes a new server instance using the name and port from the flags.
-	server := &Server{}
+	// Sets its default server state
+	server := &AuctionHouseServer{
+		serverState: gRPC.ServerState{
+			EndAuctionTimestamp:   0,
+			HighestBid:            0,
+			HighestBidderId:       "",
+			LastAuctionWinMessage: nil,
+			IsBackupServer:        isBackup,
+		},
+	}
 
-	gRPC.RegisterChatServer(grpcServer, server) //Registers the server to the gRPC server.
+	gRPC.RegisterAuctionHouseServer(grpcServer, server) //Registers the server to the gRPC server.
 
-	log.Printf("Server Chitty-Chat Listening at %v\n", list.Addr())
+	log.Println(fmt.Sprintf("(%v) Auction House started on port %v", logMessagePrefix, port))
 
 	if err := grpcServer.Serve(list); err != nil {
-		log.Fatalf("failed to serve %v", err)
+		log.Fatalf("Failed to serve %v", err)
 	}
 }
 
-func (s *Server) SendClientTransaction(_ context.Context, client *gRPC.ClientTransaction) (*emptypb.Empty, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+func (s *AuctionHouseServer) Bid(_ context.Context, bidRequest *gRPC.BidRequest) (*gRPC.BidAck, error) {
+	newMsg := ""
+	if s.serverState.EndAuctionTimestamp > 0 && s.serverState.EndAuctionTimestamp <= time.Now().Unix() {
+		// A bid has come in for an ended auction -> start new auction
+		winnerMessage := setLastAuctionWinnerMessage(&s.serverState, s.serverState.HighestBid, s.serverState.HighestBidderId)
+		s.serverState = gRPC.ServerState{
+			EndAuctionTimestamp:   0,
+			HighestBid:            0,
+			HighestBidderId:       "",
+			LastAuctionWinMessage: &winnerMessage,
+			IsBackupServer:        s.serverState.GetIsBackupServer(),
+		}
 
-	localTime = findMax(localTime, client.GetSenderTime()) + 1
+		newMsg = "The previous auction has ended, your bid request has unfortunately started a new auction...\n"
+	}
 
-	var action string
+	// Sets new end of auction timestamp
+	if s.serverState.EndAuctionTimestamp == 0 {
+		s.serverState.EndAuctionTimestamp = time.Now().Unix() + 100
+	}
 
-	if client.GetJoin() {
-		action = "joined"
+	if s.serverState.HighestBid < bidRequest.GetAmount() {
+		// New winner bet
+		s.serverState.HighestBid = bidRequest.GetAmount()
+		s.serverState.HighestBidderId = bidRequest.GetUserId()
+		go func() {
+			// Non-blocking update backup server
+			initiateServerUpdate(&s.serverState)
+		}()
+
+		return &gRPC.BidAck{
+			State:   gRPC.ResponseState_SUCCESS,
+			Message: fmt.Sprintf("%vYou are the current highest bidder with %v", newMsg, bidRequest.GetAmount()),
+		}, nil
 	} else {
-		action = "left"
-	}
-
-	s.messages = append(s.messages, SavedMessage{
-		clientName: client.GetClientName(),
-		message:    fmt.Sprintf("Participant %v %v Chitty-Chat at Lamport time %v", client.GetClientName(), action, localTime),
-		timestamp:  localTime,
-	})
-
-	return &emptypb.Empty{}, nil
-}
-
-func (s *Server) SendMessage(_ context.Context, msg *gRPC.Message) (*emptypb.Empty, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	localTime = findMax(localTime, msg.GetSenderTime()) + 1
-
-	s.messages = append(s.messages, SavedMessage{
-		clientName: msg.GetClientName(),
-		message:    fmt.Sprintf("%v (Lamport %v): %v", msg.GetClientName(), localTime, msg.GetMessage()),
-		timestamp:  localTime,
-	})
-
-	return &emptypb.Empty{}, nil
-}
-
-func (s *Server) GetBroadcast(_ *emptypb.Empty, msgStream gRPC.Chat_GetBroadcastServer) error {
-	var messages = s.messages
-
-	for _, message := range messages {
-		localTime++
-		err := msgStream.SendMsg(&gRPC.Message{
-			ClientName: message.clientName,
-			Message:    message.message,
-			SenderTime: localTime,
-		})
-		// the stream is closed so we can exit the loop
-		if err == io.EOF {
-			break
-		}
-		// some other error
-		if err != nil {
-			return err
-		}
-	}
-
-	for {
-		if len(messages) == len(s.messages) {
-			continue
-		}
-
-		for i := 0; i < (len(s.messages) - len(messages)); i++ {
-			var messageToBroadcast = s.messages[len(messages)+i]
-
-			messages = append(messages, messageToBroadcast)
-
-			localTime++
-			err := msgStream.SendMsg(&gRPC.Message{
-				ClientName: messageToBroadcast.clientName,
-				Message:    messageToBroadcast.message,
-				SenderTime: localTime,
-			})
-
-			// the stream is closed so we can exit the loop
-			if err == io.EOF {
-				break
-			}
-			// some other error
-			if err != nil {
-				return err
-			}
-		}
+		// Invalid bet (less than the highest bid)
+		return &gRPC.BidAck{
+			State:   gRPC.ResponseState_FAIL,
+			Message: fmt.Sprintf("Higher bid exists (%v)", s.serverState.HighestBid),
+		}, nil
 	}
 }
 
-func findMax(a, b int32) int32 {
-	if a > b {
-		return a
+func (s *AuctionHouseServer) Result(_ context.Context, _ *emptypb.Empty) (*gRPC.ResultRes, error) {
+	//Check if auction is over
+	if s.serverState.GetEndAuctionTimestamp() > 0 && s.serverState.GetEndAuctionTimestamp() <= time.Now().Unix() {
+		//The auction is over
+		setLastAuctionWinnerMessage(&s.serverState, s.serverState.HighestBid, s.serverState.HighestBidderId)
+		go func() {
+			// Last auction winner message needs updating
+			initiateServerUpdate(&s.serverState)
+		}()
+		return &gRPC.ResultRes{
+			State:   gRPC.ResponseState_SUCCESS,
+			Message: fmt.Sprintf("The auction is over!\n%v", s.serverState.GetLastAuctionWinMessage()),
+		}, nil
+	} else if s.serverState.GetEndAuctionTimestamp() > 0 && s.serverState.GetEndAuctionTimestamp() > time.Now().Unix() {
+		// An auction is ongoing
+		return &gRPC.ResultRes{
+			State:   gRPC.ResponseState_SUCCESS,
+			Message: fmt.Sprintf("The highest bid is %v by user %v\nTime remaining: %v seconds", s.serverState.GetHighestBid(), s.serverState.GetHighestBidderId(), s.serverState.GetEndAuctionTimestamp()-time.Now().Unix()),
+		}, nil
 	} else {
-		return b
+		// No auctions have started yet
+		return &gRPC.ResultRes{
+			State:   gRPC.ResponseState_SUCCESS,
+			Message: "No auctions have yet to be run, submit a bid to start a new auction",
+		}, nil
+	}
+}
+
+func (s *AuctionHouseServer) UpdateServer(_ context.Context, serverState *gRPC.ServerState) (*gRPC.UpdateServerAck, error) {
+	//Do not allow updates on the primary server
+	if !s.serverState.GetIsBackupServer() {
+		return &gRPC.UpdateServerAck{
+			State: gRPC.ResponseState_FAIL,
+		}, nil
+	}
+
+	// Updates the backup server's values
+	s.serverState.HighestBid = serverState.GetHighestBid()
+	s.serverState.HighestBidderId = serverState.GetHighestBidderId()
+	s.serverState.EndAuctionTimestamp = serverState.GetEndAuctionTimestamp()
+	s.serverState.LastAuctionWinMessage = serverState.LastAuctionWinMessage
+	s.serverState.IsBackupServer = true
+
+	return &gRPC.UpdateServerAck{
+		State: gRPC.ResponseState_SUCCESS,
+	}, nil
+}
+
+func initiateServerUpdate(serverState *gRPC.ServerState) {
+	// If is backup server - do nothing
+	if serverState.GetIsBackupServer() {
+		return
+	}
+
+	// If server is not connected to backup - connect
+	if !isConnectedToBackup {
+		connectToBackup()
+	}
+
+	// Update backup server state
+	res, err := backupServer.UpdateServer(context.Background(), serverState)
+	check(err) // Update backup server failed - PANIC
+
+	if res.GetState() != gRPC.ResponseState_SUCCESS {
+		panic("Failed to update backup server")
+	}
+}
+
+func setLastAuctionWinnerMessage(serverState *gRPC.ServerState, highestBid int32, winnerUser string) string {
+	winnerMessage := fmt.Sprintf("Last auction was won with a bid of %v by user with ID %v", highestBid, winnerUser)
+	serverState.LastAuctionWinMessage = &winnerMessage
+	return winnerMessage
+}
+
+func connectToBackup() {
+	opts := []grpc.DialOption{
+		grpc.WithBlock(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
+	conn, err := grpc.Dial(":3001", opts...)
+	check(err)
+
+	backupServer = gRPC.NewAuctionHouseClient(conn)
+	_ = conn
+	log.Printf("(%v) The connection is: %v\n", logMessagePrefix, conn.GetState().String())
+	isConnectedToBackup = true
+}
+
+func check(e error) {
+	if e != nil {
+		panic(e)
 	}
 }

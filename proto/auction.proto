@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/marcusaandahl/disys-hw5/proto";
+
+package proto;
+
+service AuctionHouse {
+  rpc Bid(BidRequest) returns (BidAck) {}
+  rpc Result(google.protobuf.Empty) returns (ResultRes) {}
+  rpc ResultStream(google.protobuf.Empty) returns (stream ResultRes) {}
+  rpc UpdateServer(ServerState) returns (UpdateServerAck) {}
+}
+
+// Bid rpc method params
+message BidRequest {
+  string requestId = 1;
+  string UserId = 2;
+  int32 amount = 3;
+}
+
+message BidAck {
+  ResponseState state = 1;
+  string message = 2;
+}
+
+// Result(Stream) rpc methods results
+message ResultRes {
+  ResponseState state = 1;
+  string message = 2;
+}
+
+// UpdateServer rpc method params
+message ServerState {
+  int64 endAuctionTimestamp = 1;
+  int32 highestBid = 2;
+  string highestBidderId = 3;
+  optional string lastAuctionWinMessage = 4;
+  bool isBackupServer = 5;
+}
+
+message UpdateServerAck {
+  ResponseState state = 1;
+}
+
+enum ResponseState {
+  SUCCESS = 0;
+  FAIL = 1;
+  EXCEPTION = 2;
+}

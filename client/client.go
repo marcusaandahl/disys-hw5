@@ -3,170 +3,148 @@ package main
 import (
 	"bufio"
 	"context"
-	"github.com/inancgumus/screen"
+	"fmt"
+	"github.com/google/uuid"
 	gRPC "github.com/marcusaandahl/disys-hw5/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"io"
 	"log"
 	"os"
 	"os/signal"
-	"os/user"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
-var server gRPC.ChatClient
-var ServerConn *grpc.ClientConn //the server connection
+var client gRPC.AuctionHouseClient
+var clientConn *grpc.ClientConn //the server connection
+var clientConnPort int32 = 3000
 
-var messages []*gRPC.Message
-
-var localTime int32 = 0
+var ID = uuid.NewString()
 
 func main() {
-	ConnectToServer()
+	//Connect to server
+	connectToServer()
 
-	sysUser, err := user.Current()
-
-	stream, err := server.GetBroadcast(context.Background(), &emptypb.Empty{})
-
-	if err != nil {
-		log.Fatalln("Unable to start up")
-	}
-
+	// Closes safely if needed
 	signals := make(chan os.Signal, 1)
-
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTSTP)
-
 	go func() {
 		<-signals
-		Leave(sysUser.Name, stream)
+		Leave()
 		os.Exit(0)
 	}()
 
-	FollowBroadcast(sysUser.Name, stream)
+	log.Printf("(CLIENT-%v) Write 'bid' to bid and/or start an auction; or write 'result' to see the result of the latest auction.\n", ID)
+
+	// Starts monitoring for input
+	monitorInput()
 }
 
-func ConnectToServer() {
+func connectToServer() {
+	// Attempts connection on port 3000 (primary)
+	log.Printf("(CLIENT-%v) Starting a new connection\n", ID)
 	opts := []grpc.DialOption{
 		grpc.WithBlock(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
 
-	conn, err := grpc.Dial(":5400", opts...)
-	if err != nil {
-		log.Fatalf("Fail to Dial : %v", err)
-		return
-	}
-
-	server = gRPC.NewChatClient(conn)
-	ServerConn = conn
-	log.Println("The connection is: ", conn.GetState().String())
-}
-
-func Leave(userName string, stream gRPC.Chat_GetBroadcastClient) {
-	SendLeave(userName)
-
-	err := stream.CloseSend()
-	err = ServerConn.Close()
+	conPrimary, cancelPrimary := context.WithTimeout(context.Background(), 3*time.Second)
+	conn, err := grpc.DialContext(conPrimary, fmt.Sprintf(":%v", clientConnPort), opts...)
 
 	if err != nil {
-		log.Fatalln("Unable to close stream")
+		// If fails on primary - try backup on port 3001
+		cancelPrimary()
+
+		clientConnPort = 3001
+
+		conBackup, cancelBackup := context.WithTimeout(context.Background(), 3*time.Second)
+		conn, err = grpc.DialContext(conBackup, fmt.Sprintf(":%v", clientConnPort), opts...)
+
+		check(err)
+
+		defer cancelBackup()
 	}
+
+	// Successful connection - generate client
+	client = gRPC.NewAuctionHouseClient(conn)
+	clientConn = conn
+	log.Printf("(CLIENT-%v) The connection is: %v\n", ID, conn.GetState().String())
+
+	cancelPrimary()
 }
 
-func SendJoin(userName string) {
-	localTime++
-	client := &gRPC.ClientTransaction{
-		ClientName: userName,
-		Join:       true,
-		SenderTime: localTime,
-	}
-
-	_, err := server.SendClientTransaction(context.Background(), client)
-	if err != nil {
-		log.Print("Client: no response from the server, attempting to reconnect: ")
-		log.Println(err)
-	}
+func Leave() {
+	err := clientConn.Close()
+	check(err)
 }
 
-func SendLeave(userName string) {
-	localTime++
-	client := &gRPC.ClientTransaction{
-		ClientName: userName,
-		Join:       false,
-		SenderTime: localTime,
-	}
-
-	_, err := server.SendClientTransaction(context.Background(), client)
-	if err != nil {
-		log.Print("Client: no response from the server, attempting to reconnect: ")
-		log.Println(err)
-	}
-}
-
-func SendMessage(userName string, messageInput string) {
-
-	if len(messageInput) > 128 {
-		log.Println("Message can max be 128 characters long! Message was not sent")
-		log.Print(userName + "> ")
-		return
-	}
-
-	localTime++
-	message := &gRPC.Message{
-		ClientName: userName,
-		Message:    messageInput,
-		Timestamp:  localTime,
-		SenderTime: localTime,
-	}
-
-	_, err := server.SendMessage(context.Background(), message)
-	if err != nil {
-		log.Print("Client: no response from the server, attempting to reconnect: ")
-		log.Println(err)
-	}
-}
-
-func FollowBroadcast(userName string, stream gRPC.Chat_GetBroadcastClient) {
-	screen.Clear()
-
-	SendJoin(userName)
-
-	go func() {
-		for {
-			msg, err := stream.Recv()
-			if err == io.EOF {
-				return
-			}
-			if err != nil {
-				log.Fatalf("Failed to receive a note : %v", err)
-			}
-
-			localTime = findMax(localTime, msg.GetSenderTime()) + 1
-
-			messages = append(messages, msg)
-
-			screen.Clear()
-			screen.MoveTopLeft()
-			for _, message := range messages {
-				log.Println(message.GetMessage())
-			}
-
-			log.Printf("%v> ", userName)
-		}
-	}()
-
+func monitorInput() {
 	var scanner = bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		SendMessage(userName, scanner.Text())
+		userInput := scanner.Text()
+		if strings.HasPrefix(userInput, "bid") {
+			if len(userInput) > 5 {
+				callBid(userInput[4:])
+			} else {
+				log.Printf("(CLIENT-%v) 'bid' command requires an amount\n", ID)
+			}
+		} else if userInput == "result" {
+			callResult()
+		} else {
+			log.Printf("(CLIENT-%v) Invalid command - try 'result' or 'bid\n", ID)
+		}
 	}
 }
 
-func findMax(a, b int32) int32 {
-	if a > b {
-		return a
+func callBid(value string) {
+	//Convert value to a integer
+	amount, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("(CLIENT-%v) 'bid' command requires a valid number as amount\n", ID)
+	}
+
+	// Calls grpc method
+	res, err := client.Bid(context.Background(), &gRPC.BidRequest{
+		RequestId: uuid.NewString(),
+		UserId:    ID,
+		Amount:    int32(amount),
+	})
+	if err != nil || res.GetState() == gRPC.ResponseState_EXCEPTION {
+		// Failed grpc method - falls back to backup server
+		log.Printf("(CLIENT-%v) Server returned with exception - Attempting to switch to backup server for bid\n", ID)
+		if clientConnPort == 3001 {
+			log.Fatalf("(CLIENT-%v) Backup server failed\n", ID)
+		}
+		clientConnPort = 3001
+		connectToServer()
+		callBid(value)
 	} else {
-		return b
+		log.Println(res.GetMessage())
+	}
+}
+
+func callResult() {
+	// Calls grpc method
+	res, err := client.Result(context.Background(), &emptypb.Empty{})
+	if err != nil || res.GetState() == gRPC.ResponseState_EXCEPTION {
+		// Failed grpc method - falls back to backup server
+		log.Printf("(CLIENT-%v) Server returned with exception - Attempting to switch server for result\n", ID)
+		if clientConnPort == 3001 {
+			log.Fatalf("(CLIENT-%v) Backup server failed\n", ID)
+		}
+		clientConnPort = 3001
+		connectToServer()
+		callResult()
+	} else {
+		log.Println(res.GetMessage())
+	}
+}
+
+func check(e error) {
+	if e != nil {
+		panic(e)
 	}
 }
