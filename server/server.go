@@ -171,10 +171,10 @@ func initiateServerUpdate(serverState *gRPC.ServerState) {
 
 	// Update backup server state
 	res, err := backupServer.UpdateServer(context.Background(), serverState)
-	check(err) // Update backup server failed - PANIC
 
-	if res.GetState() != gRPC.ResponseState_SUCCESS {
-		panic("Failed to update backup server")
+	if res.GetState() != gRPC.ResponseState_SUCCESS || err != nil {
+		log.Println("Connection to backup is lost")
+		isConnectedToBackup = false
 	}
 }
 
@@ -190,11 +190,13 @@ func connectToBackup() {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
 
-	conn, err := grpc.Dial(":3001", opts...)
-	check(err)
+	conn, _ := grpc.Dial(":3001", opts...)
+
+	conBackup, cancelBackup := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelBackup()
+	conn, _ = grpc.DialContext(conBackup, ":3001", opts...)
 
 	backupServer = gRPC.NewAuctionHouseClient(conn)
-	_ = conn
 	log.Printf("(%v) The connection is: %v\n", logMessagePrefix, conn.GetState().String())
 	isConnectedToBackup = true
 }
